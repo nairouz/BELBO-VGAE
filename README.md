@@ -14,28 +14,24 @@ Variational Graph Auto-Encoders (VGAEs) have achieved promising performance in s
 
 ### Quantitative 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/Table_1.png" >
+<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/table.png" >
 </p>
+
 <p align="center">
-<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/Table_2.png" >
-</p>
-<p align="center">
-<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/Table_3.png" >
+<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/pc.png">
 </p>
 
 ### Qualitative 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/vis.png">
+<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/vis.png">
 </p>
-<p align="center">
-<img align="center" src="https://github.com/nairouz/CVGAE_PR/blob/main/images/pc.png">
-</p>
+
 
 ## Usage
 
 We provide the code of BELBO-VGAE. For each dataset, we provide the pretraining weights. The data is also provided with the code. Users can perform their own pretraining if they wish. For instance, to run the code of BELBO-VGAE on Cora, you should clone this repo and use the following command: 
 ```
-python3 ./BELBO/main_cora.py
+python3 ./BELBO-VGAE/main_cora.py
 ```
 
 ## Built With
