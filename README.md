@@ -7,7 +7,7 @@ Variational Graph Auto-Encoders (VGAEs) have achieved promising performance in s
 ## Conceptual design
 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/BELBO_model.png">
+<img align="center" src="https://raw.githubusercontent.com/nairouz/BELBO-VGAE/main/images/BELBO_model.png">
 </p>
 
 ## Some Results
