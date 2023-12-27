@@ -14,16 +14,16 @@ Variational Graph Auto-Encoders (VGAEs) have achieved promising performance in s
 
 ### Quantitative 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/table.png" >
+<img align="center" src="https://raw.githubusercontent.com/nairouz/BELBO-VGAE/main/images/table.png" >
 </p>
 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/pc.png">
+<img align="center" src="https://raw.githubusercontent.com/nairouz/BELBO-VGAE/main/images/pc.png">
 </p>
 
 ### Qualitative 
 <p align="center">
-<img align="center" src="https://github.com/nairouz/BELBO-VGAE/tree/main/images/vis.png">
+<img align="center" src="https://raw.githubusercontent.com/nairouz/BELBO-VGAE/main/images/vis.png">
 </p>
 
 
