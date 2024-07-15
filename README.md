@@ -36,7 +36,7 @@ python3 ./BELBO-VGAE/main_cora.py
 
 ## Built With
 
-All the required libraries are provided in the ```requirement.txt``` file. The code is built with:
+The code is built with:
 
 * Python 3.6
 * Pytorch 1.7.0
