@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # @Authors : Nairouz Mrabah (mrabah.nairouz@courrier.uqam.ca) 
-# @Link    : github.com/nairouz/CVGAE
-# @Paper   : Beyond the Evidence Lower Bound: A Contrastive Variatonal Graph Auto-Encoder for Attributed Graph Clustering
+# @Link    : github.com/nairouz/BELBO-VGAE
+# @Paper   : Beyond The Evidence Lower Bound: Dual Variational Graph Auto-Encoders For Node Clustering (BELBO-VGAE)
 # @License : MIT License
 
 import os
@@ -152,31 +152,6 @@ def generate_unconflicted_data_index(p, beta_1, beta_2):
     conf_indices = np.asarray(conf_indices, dtype=int)
     return unconf_indices, conf_indices
 
-def generate_sep_index(emb, centers, p):
-    emb = emb.detach().cpu().numpy()
-    centers = centers.detach().cpu().numpy()
-    p = p.detach().cpu().numpy()
-    nn = NearestNeighbors(n_neighbors= 1, algorithm='ball_tree').fit(emb)
-    _, indices = nn.kneighbors(centers)
-    indices_sep = np.zeros((emb.shape[0], centers.shape[0]-2), dtype=int)
-    assignments_index = np.argsort(p, axis=1)
-    first_center_index = indices[assignments_index[:,-1]]
-    second_center_index = indices[assignments_index[:,-2]]
-    for i in range(emb.shape[0]):
-        k = 0
-        for j in indices:
-            if (j != first_center_index[i]) and (j != second_center_index[i]):
-                indices_sep[i, k] = j
-                k+=1
-    return indices_sep
-
-def negative_embeddings(z_mu_pos, z_sigma2_log_pos, emb_pos):
-    idx = torch.randperm(emb_pos.shape[0])
-    z_mu_neg = z_mu_pos[idx,:]
-    z_sigma2_log_neg = z_sigma2_log_pos[idx,:]
-    emb_neg = emb_pos[idx,:]
-    return z_mu_neg, z_sigma2_log_neg, emb_neg
-
 def target_distribution(p, unconflicted_ind, conflicted_ind):
     p = p.detach().cpu().numpy()
     q = np.zeros(p.shape)
@@ -199,10 +174,10 @@ def evaluate_links(adj, labels):
                     count_links["nb_false_links"] += 1
     return count_links
 
-class CVGAE(nn.Module):
+class BELBO(nn.Module):
 
     def __init__(self, **kwargs):
-        super(CVGAE, self).__init__()
+        super(BELBO, self).__init__()
         self.num_neurons = kwargs['num_neurons']
         self.num_features = kwargs['num_features']
         self.embedding_size = kwargs['embedding_size']
@@ -223,7 +198,12 @@ class CVGAE(nn.Module):
         self.gcn_mean = GraphConvSparse(self.num_neurons, self.embedding_size, activation=lambda x:x)
         self.gcn_logsigma2 = GraphConvSparse(self.num_neurons, self.embedding_size, activation=lambda x:x)
         self.assignment = ClusterAssignment(self.nClusters, self.embedding_size, self.alpha)
-        self.kl_loss = nn.KLDivLoss(reduction='batchmean') 
+        self.kl_loss = nn.KLDivLoss(reduction='batchmean')
+
+    def update_moving_average(self, ema_updater, ma_model):
+        for current_params, ma_params in zip(self.parameters(), ma_model.parameters()):
+            old_weight, up_weight = ma_params.data, current_params.data
+            ma_params.data = ema_updater.update_average(old_weight, up_weight)
 
     def generate_centers(self, emb_unconf):
         y_pred = self.predict(emb_unconf)
@@ -231,7 +211,7 @@ class CVGAE(nn.Module):
         _, indices = nn.kneighbors(self.assignment.cluster_centers.detach().cpu().numpy())
         return indices[y_pred] 
 
-    def update_graph_1(self, adj, emb, labels, unconf_indices):
+    def update_graph(self, adj, emb, labels, unconf_indices):
         count_target_links = {"nb_added_links": 0,
                               "nb_false_added_links": 0,
                               "nb_true_added_links": 0,
@@ -275,31 +255,6 @@ class CVGAE(nn.Module):
         weight_tensor_pos = weight_tensor_pos.to("cuda:4")
         return adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links
 
-    def update_graph_2(self, adj, emb, labels, unconf_indices):
-        y_pred = self.predict(emb)
-        emb_unconf = emb[unconf_indices]
-        adj_gen = adj.tolil()
-        idx = unconf_indices[self.generate_centers(emb_unconf)]    
-        for i, k in enumerate(unconf_indices):
-            adj_k_gen = adj_gen[k].tocsr().indices
-            if not(np.isin(idx[i], adj_k_gen)) and (y_pred[k] == y_pred[idx[i]]):
-                adj_gen[k, idx[i]] = 1
-        adj_gen = adj_gen - sp.dia_matrix((adj_gen.diagonal()[np.newaxis, :], [0]), shape=adj_gen.shape)
-        adj_gen = adj_gen.tocsr()
-        adj_gen.eliminate_zeros()
-        adj_norm_gen = preprocess_graph(adj_gen)
-        gen_weight = float(adj_gen.shape[0] * adj_gen.shape[0] - adj_gen.sum()) / adj_gen.sum()
-        norm_gen = adj_gen.shape[0] * adj_gen.shape[0] / float((adj_gen.shape[0] * adj_gen.shape[0] - adj_gen.sum()) * 2)
-        adj_label_gen = adj_gen + sp.eye(adj_gen.shape[0])
-        adj_label_gen = sparse_to_tuple(adj_label_gen)
-        adj_norm_gen = torch.sparse.FloatTensor(torch.LongTensor(adj_norm_gen[0].T), torch.FloatTensor(adj_norm_gen[1]), torch.Size(adj_norm_gen[2])).to("cuda:4")
-        adj_label_gen = torch.sparse.FloatTensor(torch.LongTensor(adj_label_gen[0].T), torch.FloatTensor(adj_label_gen[1]), torch.Size(adj_label_gen[2])).to("cuda:4")
-        weight_mask_gen = adj_label_gen.to_dense().view(-1) == 1
-        weight_tensor_gen = torch.ones(weight_mask_gen.size(0))
-        weight_tensor_gen[weight_mask_gen] = gen_weight
-        weight_tensor_gen = weight_tensor_gen.to("cuda:4")
-        return adj_gen, adj_norm_gen, adj_label_gen, weight_tensor_gen, norm_gen
-
     @staticmethod
     def update_features(features):
         features_dense = features.to_dense()
@@ -310,17 +265,7 @@ class CVGAE(nn.Module):
         features_neg = torch.sparse.FloatTensor(indices, values, features_neg.size())
         return features_neg
 
-    def compute_separtion_loss(self, z_mu_pos, z_sigma2_log_pos, sep_ind, unconflicted_ind):
-        # Preparing negative signals
-        z_mu_neg_tensor = z_mu_pos[sep_ind,:][unconflicted_ind]
-        z_mu_pos_tensor = z_mu_pos[unconflicted_ind].unsqueeze(1).repeat_interleave(self.nClusters-2, dim=1)
-
-        # Computing the separation loss
-        KL_neg = (1 / z_mu_pos.shape[0]) * torch.einsum("ijk,ijk->ij", (z_mu_pos_tensor - z_mu_neg_tensor), (z_mu_pos_tensor - z_mu_neg_tensor))
-        Loss_sep = torch.mean(torch.log(1 + torch.mean(torch.exp(-KL_neg), dim=1)), dim=0)
-        return Loss_sep
-
-    def pretrain(self, features, adj_norm, adj_label, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, save_path="/home/mrabah_n/code/CVGAE/results/", dataset="Cora"):
+    def pretrain(self, features, adj_norm, adj_label, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, save_path="./results/", dataset="Cora"):
         if optimizer == "SGD":
             opti = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay = 0.001)
         elif optimizer == "RMSProp":
@@ -404,7 +349,7 @@ class CVGAE(nn.Module):
         print("Best accuracy : ", acc_best)  
         return y_pred_best, y
     
-    def train(self, features, adj_norm, adj_label, adj, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, beta_1=0.3, beta_2=0.15, save_path="/home/mrabah_n/code/CVGAE/results/", dataset="Cora"):
+    def train(self, teacher, teacher_ema_updater, features, adj_norm, adj_label, adj, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, beta_1=0.3, beta_2=0.15, save_path="/home/mrabah_n/code/BELBO/results/", dataset="Cora"):
         self.load_state_dict(torch.load(save_path + dataset + '/pretrain/model_pretrain.pk'))
         if optimizer == "Adam":
             opti = Adam(self.parameters(), lr=lr, weight_decay=1e-3)
@@ -443,16 +388,15 @@ class CVGAE(nn.Module):
         for epoch in epoch_bar:
             opti.zero_grad()
             z_mu_pos, z_sigma2_log_pos, emb_pos, hidden_pos = self.encode(features_pos, adj_norm_pos)
-            z_mu_neg, z_sigma2_log_neg, emb_neg, hidden_neg = self.encode(features, adj_norm)
+            with torch.no_grad():
+                z_mu_neg, z_sigma2_log_neg, emb_neg, _ = teacher.encode(features, adj_norm)
+                p_neg = self.assignment(z_mu_neg)
             p_pos = self.assignment(z_mu_pos)
             adj_out_pos = self.decode(emb_pos)
-
             if epoch % 50 == 0:
-                unconflicted_ind, conflicted_ind = generate_unconflicted_data_index(p_pos, beta_1, beta_2)
-                sep_ind = generate_sep_index(emb_pos, self.assignment.cluster_centers, p_pos)
+                unconflicted_ind, conflicted_ind = generate_unconflicted_data_index(p_neg, beta_1, beta_2)
                 q_pos = target_distribution(p_pos, unconflicted_ind, conflicted_ind)
-                adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links = self.update_graph_1(adj, emb_pos, y, unconflicted_ind)
-                adj_gen, adj_norm_gen, adj_label_gen, weight_tensor_gen, norm_gen = self.update_graph_2(adj, emb_pos, y, unconflicted_ind)
+                adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links = self.update_graph(adj, (z_mu_pos + z_mu_neg) / 2, y, unconflicted_ind)
                 count_links = evaluate_links(adj_pos, y)
 
             ##############################################################
@@ -462,13 +406,12 @@ class CVGAE(nn.Module):
 
             ##############################################################
             # Loss
-            Loss_recons = norm_pos * F.binary_cross_entropy(adj_out_pos.view(-1), adj_label_gen.to_dense().view(-1), weight=weight_tensor_gen)
+            Loss_recons = norm_pos * F.binary_cross_entropy(adj_out_pos.view(-1), adj_label_pos.to_dense().view(-1), weight=weight_tensor_pos)
             Loss_clus = 2 * self.kl_loss(torch.log(p_pos), q_pos)
             Loss_reg = torch.mean((1 / z_mu_pos.shape[0]) * torch.sum(z_mu_pos ** 2 + torch.exp(z_sigma2_log_pos) - 1 - z_sigma2_log_pos, dim=1))
             Loss_comp = Loss_recons + self.gamma_1 * Loss_clus + self.gamma_2 * Loss_reg
-            #Loss_sep = - torch.mean((1 / z_mu_pos.shape[0]) * torch.sum(z_sigma2_log_neg - z_sigma2_log_pos - 1 + torch.exp(z_sigma2_log_pos) + torch.square(z_mu_pos - z_mu_neg), dim=1))
-            #Loss_sep = self.compute_separtion_loss(z_mu_pos, z_sigma2_log_pos, sep_ind, unconflicted_ind)
-            Loss = Loss_comp #+ self.gamma_3 * Loss_sep
+            Loss_sep = - torch.mean((1 / z_mu_pos.shape[0]) * torch.sum(z_sigma2_log_neg - z_sigma2_log_pos - 1 + torch.exp(z_sigma2_log_pos) + torch.square(z_mu_pos - z_mu_neg), dim=1))
+            Loss = Loss_comp + self.gamma_3 * Loss_sep
             ua = ((z_mu_neg - z_mu_neg.mean(0)[None, :]) ** 2).mean(0)
             active_units = torch.where(ua > 5)[0]
             nau = active_units.shape[0]
@@ -476,16 +419,17 @@ class CVGAE(nn.Module):
 
             ##############################################################
             # Evaluation
-            acc_unconf, nmi_unconf, acc_conf, nmi_conf = self.compute_acc_and_nmi_conflicted_data(unconflicted_ind, conflicted_ind, emb_pos, y)
+            acc_unconf, nmi_unconf, acc_conf, nmi_conf = self.compute_acc_and_nmi_conflicted_data(unconflicted_ind, conflicted_ind, z_mu_pos, y)
             epoch_bar.write('Loss training = {:.4f}'.format(Loss.detach().cpu().numpy()))
             print("")
             print("loss reconstruction: " + str(Loss_recons.detach().cpu().numpy()))
             print("loss clustering: " + str(Loss_clus.detach().cpu().numpy()))
             print("loss regularisation: " + str(Loss_reg.detach().cpu().numpy()))
             print("loss compactness: " + str(Loss_comp.detach().cpu().numpy()))
-            #print("loss separability: " + str(Loss_sep.detach().cpu().numpy()))
+            print("loss separability: " + str(Loss_sep.detach().cpu().numpy()))
             print("loss: " + str(Loss.detach().cpu().numpy()))
-            y_pred = self.predict(emb_pos)                            
+
+            y_pred = self.predict(z_mu_pos)
             cm = Clustering_Metrics(y, y_pred)
             acc, nmi, ari, f1_macro, precision_macro, recall_macro, f1_micro, precision_micro, recall_micro = cm.evaluationClusterModelFromLabel()
             pur = purity_score(y, y_pred)
@@ -495,6 +439,7 @@ class CVGAE(nn.Module):
             Loss.backward()
             opti.step()
             lr_s.step()
+            self.update_moving_average(teacher_ema_updater, teacher)
 
             ##############################################################
             # Save logs
@@ -530,7 +475,7 @@ class CVGAE(nn.Module):
                            nb_true_dropped_links=count_target_links["nb_true_deleted_links"],
                            nmi_conf=nmi_conf, nb_unconf=unconflicted_ind.shape[0], nb_conf=conflicted_ind.shape[0],
                            Loss_recons=Loss_recons.detach().cpu().numpy(), Loss_clus=Loss_clus.detach().cpu().numpy(),
-                           Loss_reg=Loss_reg.detach().cpu().numpy(), #Loss_sep=Loss_sep.detach().cpu().numpy(),
+                           Loss_reg=Loss_reg.detach().cpu().numpy(), Loss_sep=Loss_sep.detach().cpu().numpy(),
                            Loss_comp=Loss_comp.detach().cpu().numpy(), Loss=Loss.detach().cpu().numpy())
             logwriter.writerow(logdict)
             logfile.flush()

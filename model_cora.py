@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # @Authors : Nairouz Mrabah (mrabah.nairouz@courrier.uqam.ca) 
-# @Link    : github.com/nairouz/BELBO
-# @Paper   : Beyond the Evidence Lower Bound: A Contrastive Variatonal Graph Auto-Encoder for Attributed Graph Clustering
+# @Link    : github.com/nairouz/BELBO-VGAE
+# @Paper   : Beyond The Evidence Lower Bound: Dual Variational Graph Auto-Encoders For Node Clustering (BELBO-VGAE)
 # @License : MIT License
 
 import os
@@ -151,10 +151,6 @@ def target_distribution(p, unconflicted_ind, conflicted_ind):
     q = torch.tensor(q, dtype=torch.float32).to("cuda:4")
     return q
 
-#def target_distribution(p):
-#    weight = (p ** 2) / torch.sum(p, 0)
-#    return (weight.t() / torch.sum(weight, 1)).t()
-
 def evaluate_links(adj, labels):
     count_links = {"nb_links": 0,
                    "nb_false_links": 0,
@@ -193,7 +189,12 @@ class BELBO(nn.Module):
         self.gcn_mean = GraphConvSparse(self.num_neurons, self.embedding_size, activation=lambda x:x)
         self.gcn_logsigma2 = GraphConvSparse(self.num_neurons, self.embedding_size, activation=lambda x:x)
         self.assignment = ClusterAssignment(self.nClusters, self.embedding_size, self.alpha)
-        self.kl_loss = nn.KLDivLoss(reduction='batchmean') 
+        self.kl_loss = nn.KLDivLoss(reduction='batchmean')
+
+    def update_moving_average(self, ema_updater, ma_model):
+        for current_params, ma_params in zip(self.parameters(), ma_model.parameters()):
+            old_weight, up_weight = ma_params.data, current_params.data
+            ma_params.data = ema_updater.update_average(old_weight, up_weight)
 
     def generate_centers(self, emb_unconf):
         y_pred = self.predict(emb_unconf)
@@ -201,7 +202,7 @@ class BELBO(nn.Module):
         _, indices = nn.kneighbors(self.assignment.cluster_centers.detach().cpu().numpy())
         return indices[y_pred] 
 
-    def update_graph_1(self, adj, emb, labels, unconf_indices):
+    def update_graph(self, adj, emb, labels, unconf_indices):
          count_target_links = {"nb_added_links": 0,
                                "nb_false_added_links": 0,
                                "nb_true_added_links": 0,
@@ -245,32 +246,7 @@ class BELBO(nn.Module):
          weight_tensor_pos = weight_tensor_pos.to("cuda:4")
          return adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links
 
-    # def update_graph_2(self, adj, emb, labels, unconf_indices):
-    #     y_pred = self.predict(emb)
-    #     emb_unconf = emb[unconf_indices]
-    #     adj_gen = adj.tolil()
-    #     idx = unconf_indices[self.generate_centers(emb_unconf)]
-    #     for i, k in enumerate(unconf_indices):
-    #         adj_k_gen = adj_gen[k].tocsr().indices
-    #         if not(np.isin(idx[i], adj_k_gen)) and (y_pred[k] == y_pred[idx[i]]):
-    #             adj_gen[k, idx[i]] = 1
-    #     adj_gen = adj_gen - sp.dia_matrix((adj_gen.diagonal()[np.newaxis, :], [0]), shape=adj_gen.shape)
-    #     adj_gen = adj_gen.tocsr()
-    #     adj_gen.eliminate_zeros()
-    #     adj_norm_gen = preprocess_graph(adj_gen)
-    #     gen_weight = float(adj_gen.shape[0] * adj_gen.shape[0] - adj_gen.sum()) / adj_gen.sum()
-    #     norm_gen = adj_gen.shape[0] * adj_gen.shape[0] / float((adj_gen.shape[0] * adj_gen.shape[0] - adj_gen.sum()) * 2)
-    #     adj_label_gen = adj_gen + sp.eye(adj_gen.shape[0])
-    #     adj_label_gen = sparse_to_tuple(adj_label_gen)
-    #     adj_norm_gen = torch.sparse.FloatTensor(torch.LongTensor(adj_norm_gen[0].T), torch.FloatTensor(adj_norm_gen[1]), torch.Size(adj_norm_gen[2])).to("cuda:4")
-    #     adj_label_gen = torch.sparse.FloatTensor(torch.LongTensor(adj_label_gen[0].T), torch.FloatTensor(adj_label_gen[1]), torch.Size(adj_label_gen[2])).to("cuda:4")
-    #     weight_mask_gen = adj_label_gen.to_dense().view(-1) == 1
-    #     weight_tensor_gen = torch.ones(weight_mask_gen.size(0))
-    #     weight_tensor_gen[weight_mask_gen] = gen_weight
-    #     weight_tensor_gen = weight_tensor_gen.to("cuda:4")
-    #     return adj_gen, adj_norm_gen, adj_label_gen, weight_tensor_gen, norm_gen
-
-    def pretrain(self, features, adj_norm, adj_label, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, save_path="/home/mrabah_n/code/BELBO/results/", dataset="Cora"):
+    def pretrain(self, features, adj_norm, adj_label, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, save_path="./results/", dataset="Cora"):
         if optimizer == "SGD":
             opti = SGD(self.parameters(), lr=lr, momentum=0.9, weight_decay = 0.001)
         elif optimizer == "RMSProp":
@@ -354,8 +330,7 @@ class BELBO(nn.Module):
         print("Best accuracy : ", acc_best)  
         return y_pred_best, y
     
-    def train(self, z_mu_neg, z_sigma2_log_neg, features, adj_norm, adj_label, adj, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, beta_1=0.3, beta_2=0.15, save_path="/home/mrabah_n/code/BELBO/results/", dataset="Cora"):
-        self.load_state_dict(torch.load(save_path + dataset + '/pretrain/model_pretrain.pk'))
+    def train(self, teacher, teacher_ema_updater, features, adj_norm, adj_label, adj, y, weight_tensor, norm, optimizer="Adam", epochs=200, lr=0.01, beta_1=0.3, beta_2=0.15, save_path="./results/", dataset="Cora"):
         if optimizer == "Adam":
             opti = Adam(self.parameters(), lr=lr, weight_decay=1e-3)
         elif optimizer == "RMSProp":
@@ -379,7 +354,7 @@ class BELBO(nn.Module):
         epoch_bar = tqdm(range(epochs))
 
         ##############################################################
-        # Preparing positive signals 
+        # Preparing positive signals
         adj_norm_pos = adj_norm
         adj_label_pos = adj_label
         features_pos = features
@@ -393,14 +368,15 @@ class BELBO(nn.Module):
         for epoch in epoch_bar:
             opti.zero_grad()
             z_mu_pos, z_sigma2_log_pos, emb_pos, hidden_pos = self.encode(features_pos, adj_norm_pos)
+            with torch.no_grad():
+                z_mu_neg, z_sigma2_log_neg, emb_neg, _ = teacher.encode(features, adj_norm)
+                p_neg = self.assignment(z_mu_neg)
             p_pos = self.assignment(z_mu_pos)
             adj_out_pos = self.decode(emb_pos)
-            #q_pos = target_distribution(p_pos.detach().cpu()).to("cuda:4")
             if epoch % 20 == 0:
-                unconflicted_ind, conflicted_ind = generate_unconflicted_data_index(p_pos, beta_1, beta_2)
+                unconflicted_ind, conflicted_ind = generate_unconflicted_data_index(p_neg, beta_1, beta_2)
                 q_pos = target_distribution(p_pos, unconflicted_ind, conflicted_ind)
-                adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links = self.update_graph_1(adj, emb_pos, y, unconflicted_ind)
-                #adj_gen, adj_norm_gen, adj_label_gen, weight_tensor_gen, norm_gen = self.update_graph_2(adj, emb_pos, y, unconflicted_ind)
+                adj_pos, adj_norm_pos, adj_label_pos, weight_tensor_pos, norm_pos, count_target_links = self.update_graph(adj, (z_mu_neg + z_mu_pos) / 2, y, unconflicted_ind)
                 count_links = evaluate_links(adj_pos, y)
 
             ##############################################################
@@ -416,14 +392,14 @@ class BELBO(nn.Module):
             Loss_comp = Loss_recons + self.gamma_1 * Loss_clus + self.gamma_2 * Loss_reg
             Loss_sep = - torch.mean((1 / z_mu_pos.shape[0]) * torch.sum(z_sigma2_log_neg - z_sigma2_log_pos - 1 + torch.exp(z_sigma2_log_pos) + torch.square(z_mu_pos - z_mu_neg), dim=1))
             Loss = Loss_comp + self.gamma_3 * Loss_sep
-            ua = ((z_mu_pos - z_mu_pos.mean(0)[None, :]) ** 2).mean(0)
+            ua = ((z_mu_neg - z_mu_neg.mean(0)[None, :]) ** 2).mean(0)
             active_units = torch.where(ua > 5)[0]
             nau = active_units.shape[0]
             print('Number of active units : ' + str(nau))
 
             ##############################################################
             # Evaluation
-            acc_unconf, nmi_unconf, acc_conf, nmi_conf = self.compute_acc_and_nmi_conflicted_data(unconflicted_ind, conflicted_ind, emb_pos, y)
+            acc_unconf, nmi_unconf, acc_conf, nmi_conf = self.compute_acc_and_nmi_conflicted_data(unconflicted_ind, conflicted_ind, z_mu_pos, y)
             epoch_bar.write('Loss training = {:.4f}'.format(Loss.detach().cpu().numpy()))
             print("")
             print("loss reconstruction: " + str(Loss_recons.detach().cpu().numpy()))
@@ -432,7 +408,8 @@ class BELBO(nn.Module):
             print("loss compactness: " + str(Loss_comp.detach().cpu().numpy()))
             print("loss separability: " + str(Loss_sep.detach().cpu().numpy()))
             print("loss: " + str(Loss.detach().cpu().numpy()))
-            y_pred = self.predict(emb_pos)                            
+
+            y_pred = self.predict(z_mu_pos)
             cm = Clustering_Metrics(y, y_pred)
             acc, nmi, ari, f1_macro, precision_macro, recall_macro, f1_micro, precision_micro, recall_micro = cm.evaluationClusterModelFromLabel()
             pur = purity_score(y, y_pred)
@@ -442,6 +419,7 @@ class BELBO(nn.Module):
             Loss.backward()
             opti.step()
             lr_s.step()
+            self.update_moving_average(teacher_ema_updater, teacher)
 
             ##############################################################
             # Save logs
